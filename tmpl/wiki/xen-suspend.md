@@ -137,7 +137,7 @@ When the VM is resumed, libxc loads the saved image back into memory
 and remaps the pagetables back to the new physical addresses. It then
 rewrites the VCPU registers to pass back the suspend return code as
 mentioned previously and unpauses the new domain. At this point, we
-[increment the generation count of the event channels](https://github.com/mirage/mirage-platform/blob/a47758c696797498e3eb7f3aac90830e2993090d/xen/lib/sched.ml#L39), which isexplained below.
+[increment the generation count of the event channels](https://github.com/mirage/mirage-platform/blob/a47758c696797498e3eb7f3aac90830e2993090d/xen/lib/sched.ml#L39), which is explained below.
 Then, we
 [resume the grant tables](https://github.com/xapi-project/ocaml-xen-lowlevel-libs/blob/ac112b963a3d91cd3ceb414bb5dc0b723b761b2b/lib/gnt.ml#L277),
 which currently is a
@@ -153,27 +153,51 @@ event channels working, xenstore needs grant tables and
 activations. We then iterate through a list of other post-resume
 tasks, which are currently assumed to be dependency free.
 
-The design of resume went through a number of different paths before
-settling on the event-channel generation as the single point by which
-threads can know that a suspend/resume cycle has occurred. What happens
-is that whenever an event channel is bound, we pair up the integer
-event channel number with a 'generation count' that is incremented
-on resume. Whenever the mirage guest attempts to wait for a signal from
-an event channel, the generation count is checked, and a stale generation
-results in a Lwt thread failure. The generation count is _not_ checked
-when attempting to notify via an event channel, as this is a benign
-failure - it is only if the guest is waiting for a notification that
-the error occurs.
+An example of a resume hook can be seen in the
+[mirage-block-xen](https://github.com/mirage/mirage-block-xen)
+package. When the module initialises, it
+registers a [callback](https://github.com/mirage/mirage-block-xen/blob/master/lib/blkfront.ml#L339) that
+iterates through the list of connected devices and re-plugs them.
+It then calls [shutdown](https://github.com/mirage/shared-memory-ring/blob/61fe10539b0783ab57f84fe20a25dde9b6018ade/lwt/lwt_ring.ml#L90)
+which wakes up every thread waiting for a response with an
+exception, and also any thread that is waiting for a free slot.
+These exceptions are handled back in [mirage-block-xen](https://github.com/mirage/mirage-block-xen/blob/master/lib/blkfront.ml#L232),
+which simply retries the whole operation, being careful to use the
+refreshed information about the backend.
 
-A device that attempts to survive a suspend/resume cycle should check
-for errors when calling [Activations.wait](https://github.com/mirage/mirage-platform/blob/b5641b343c2bfbd1048d124ee0b77e2b051588dd/xen/lib/activations.ml#L68), and handle the
-Generation.Invalid failure. An example of this can be seen in the
-[block driver](https://github.com/mirage/mirage-block-xen).
-There is no attempt to notify when a grant map is now invalid. This
-is because we currently only have drivers that grant the guests pages
-to other domains (generally frontends) as opposed to drivers that map in foreign pages (generally backends).
-The latter would require hooks on suspend in order that we don't run
-into the page canonicalization problem mentioned above.
+The only thread that might possibly be running is the
+[service thread](https://github.com/mirage/mirage-block-xen/blob/master/lib/blkfront.ml#L78)
+that takes responses from the ring and demultiplexes them, and this
+thread will be killed when it attempts to wait on the
+[event channel](/wiki/xen-events). Whenever an event channel is bound,
+we pair up the integer event channel number with a 'generation count'
+that is incremented on resume. Whenever the mirage guest attempts to
+wait for a signal from an event channel, the generation count is
+checked, and a stale generation results in a Lwt thread failure. The
+generation count is _not_ checked when attempting to notify via an
+event channel, as this is a benign failure - it is only if we try to
+wait for a notification that the error occurs. Any threads that were
+already waiting at the point the domain suspended will be killed on
+resume by the
+[activations](https://github.com/mirage/mirage-platform/blob/b5641b343c2bfbd1048d124ee0b77e2b051588dd/xen/lib/activations.ml#L96)
+logic. In the case of the block device, this error mode is handled by
+simply letting the thread die. A new one will have been set up during
+the resume as part of the replug.
+
+#### Migration
+
+Live migration also uses this mechanism to move a running VM from one
+host to another with very little downtime. In this case, when the
+migration begins, the guest is switched to [log-dirty](https://github.com/mirage/xen/blob/8940a13d6de1295cfdc4a189e0a5610849a9ef59/tools/libxc/xc_domain_save.c#L955) mode, where the
+hypervisor starts to track which of the guests pages have been written
+to. The toolstack can then iteratively go through these pages and
+send them to the destination using the same protocol as suspending to
+disk, but this time unmarshalling them straight back into memory. When it [decides](https://github.com/mirage/xen/blob/8940a13d6de1295cfdc4a189e0a5610849a9ef59/tools/libxc/xc_domain_save.c#L1537) it has done enough iteratively, it then invokes the
+suspend logic above and sends through only the last few dirty
+pages, which will be much faster than the entire memory image. The
+resume logic is then invoked and the domain starts running again.
+
+
 
 
 
