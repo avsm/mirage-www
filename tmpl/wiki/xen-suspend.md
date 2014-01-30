@@ -52,13 +52,16 @@ For example, the block and network layers can reissue requests that were
 in flight at the time of the suspend, and therefore any applications
 using these can carry on without any special logic required.
 
-Walkthrough
------------
+#### Walkthrough
+
+To explain the process of suspend and resume in Mirage Xen guests,
+we will walk though the various operations in sequence.
 
 #### Suspend
 
-To explain the process, we'll walk through the simple suspend
-example in the [mirage-skeleton](https://github.com/mirage/mirage-skeleton) repository.
+The suspend example in the [mirage-skeleton](https://github.com/mirage/mirage-skeleton) repository
+contains the control logic needed to get the guest to be able to
+suspend, and is therefore a good place to start looking.
 The first thing that happens when a suspend is requested is that the
 toolstack organising the operation will signal to the guest that it
 should begin the process. This can be done via several mechanisms, but
@@ -80,7 +83,7 @@ library to
 works by waiting for any in-flight requests to be responded to, then
 cancelling any threads that are waiting on watches. These have to be
 cancelled because watches rely on state in the xenstore daemon and
-therefore have to be reissued when the VM resumes.
+therefore have to be reissued (potentially with different paths) when the VM resumes.
 
 Then, the
 [grant tables are suspended](https://github.com/mirage/mirage-platform/blob/a47758c696797498e3eb7f3aac90830e2993090d/xen/lib/sched.ml#L35)
@@ -90,8 +93,9 @@ in the mirage kernel code. The main reason for calling this is that
 the mechanism by which the grant code works is via shared memory
 pages, and these pages are [owned by xen](https://github.com/mirage/xen/blob/8940a13d6de1295cfdc4a189e0a5610849a9ef59/xen/common/grant_table.c#L1239) and not by the domain itself,
 which causes problems when suspending the VM as we will see shortly.
-Although the grant pages are mapped on demand, this is fine as
-we are now in a non-blocking part of the suspend code, and no other
+Although the grant pages are mapped on demand, and thus could be
+remapped before we've finished, this is fine as
+we are actually now in a non-blocking part of the suspend code, and no other
 Lwt threads will be scheduled.
 
 At this point we call the C function in
@@ -100,11 +104,11 @@ The first thing done there is to rewrite two fields in the start\_info
 page: The MFNs of the xenstore page (store\_mfn) and of the console
 page (console\_mfn) are turned into PFNs. This is done so that when
 the guest is resumed, xenstored and xenconsoled can be given the pages
-that the guest is expecting to talk to them on. The restore code in
-libxc where the [remapping happens](https://github.com/mirage/xen/blob/8940a13d6de1295cfdc4a189e0a5610849a9ef59/tools/libxc/xc_domain_restore.c#L2035).
+that the guest is expecting to talk to them on. It is the restore code in
+libxc where the [remapping takes place](https://github.com/mirage/xen/blob/8940a13d6de1295cfdc4a189e0a5610849a9ef59/tools/libxc/xc_domain_restore.c#L2035).
 
 We then [unmap the shared_info page](https://github.com/mirage/mirage-platform/blob/a47758c696797498e3eb7f3aac90830e2993090d/xen/runtime/kernel/sched_stubs.c#L59).
-This is required because the shared_info page actually belongs to
+This is required because the shared_info page again belongs to
 xen rather than to the guest, in a similar fashion to the grant
 pages. The page is allocated [during domain creation](https://github.com/mirage/xen/blob/8940a13d6de1295cfdc4a189e0a5610849a9ef59/xen/arch/x86/domain.c#L543).
 
@@ -131,12 +135,26 @@ This is the reason that all foreign pages such as the grant table
 pages and the shared info page needed to be unmapped before
 suspending.
 
+We are now in a position to write the guests memory to disk in
+the suspend image format. If a device emulator (qemu) was running,
+it would also have its state dumped at this point ready to be
+resumed later.
+
 #### Resume
 
-When the VM is resumed, libxc loads the saved image back into memory
-and remaps the pagetables back to the new physical addresses. It then
-rewrites the VCPU registers to pass back the suspend return code as
-mentioned previously and unpauses the new domain. At this point, we
+When the VM is resumed, libxc loads the saved image back into memory.
+It then locates the pagetables, and 'uncanonicalizes' them back from
+PFNs to the new MFNs.
+The next task is to 
+rewrite the VCPU registers to pass back the suspend return code as
+mentioned previously and then we are ready to unpause the new domain. At this point,
+control is handed back to the mirage guest as if the hypercall has just
+returned. At this point, the domain is close to the state of a cleanly
+started guest, and so we have to [reinitialize](https://github.com/mirage/mirage-platform/blob/a47758c696797498e3eb7f3aac90830e2993090d/xen/runtime/kernel/sched_stubs.c#L69) many of the same things
+that are done on startup, including enabling event delivery, initialising
+the timers and so on.
+
+We then return to the ocaml code, and
 [increment the generation count of the event channels](https://github.com/mirage/mirage-platform/blob/a47758c696797498e3eb7f3aac90830e2993090d/xen/lib/sched.ml#L39), which is explained below.
 Then, we
 [resume the grant tables](https://github.com/xapi-project/ocaml-xen-lowlevel-libs/blob/ac112b963a3d91cd3ceb414bb5dc0b723b761b2b/lib/gnt.ml#L277),
@@ -150,13 +168,12 @@ and we then
 [restore Xenstore](https://github.com/mirage/mirage-platform/blob/a47758c696797498e3eb7f3aac90830e2993090d/xen/lib/xs.ml#L89). This
 is done in this order to satisfy interdependencies - activations need
 event channels working, xenstore needs grant tables and
-activations. We then iterate through a list of other post-resume
-tasks, which are currently assumed to be dependency free.
+activations. Once this is done we can move on to a more generic set of resume items: we iterate through a list of other post-resume
+tasks, populated by other modules (such as [mirage-block-xen](https://github.com/mirage/mirage-block-xen) which are currently assumed to be dependency free.
 
-An example of a resume hook can be seen in the
-[mirage-block-xen](https://github.com/mirage/mirage-block-xen)
-package. When the module initialises, it
-registers a [callback](https://github.com/mirage/mirage-block-xen/blob/master/lib/blkfront.ml#L339) that
+An example of a resume hook can be seen in the block driver
+package, which is added when the module initialises.
+It registers a [callback](https://github.com/mirage/mirage-block-xen/blob/master/lib/blkfront.ml#L339) that
 iterates through the list of connected devices and re-plugs them.
 It then calls [shutdown](https://github.com/mirage/shared-memory-ring/blob/61fe10539b0783ab57f84fe20a25dde9b6018ade/lwt/lwt_ring.ml#L90)
 which wakes up every thread waiting for a response with an
