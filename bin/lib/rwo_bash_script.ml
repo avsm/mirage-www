@@ -47,6 +47,8 @@ module Evaluated = struct
 end
 
 let eval t =
+  Or_error.of_exn (Failure "temporarily diabled")
+  (*
   let working_dir = Filename.dirname t.filename in
   let basename = Filename.basename t.filename in
   Sys.getcwd() >>= fun curr_dir ->
@@ -69,6 +71,7 @@ let eval t =
       final() >>| fun () ->
       Ok {Evaluated.filename=t.filename; commands}
     )
+*)
 
 let eval_file filename =
   of_file filename >>= eval
