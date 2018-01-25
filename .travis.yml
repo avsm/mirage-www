@@ -13,6 +13,7 @@ addons:
     - avsm
     packages:
     - opam
+    - aspcud
     - debianutils
     - libffi-dev
     - libgmp-dev
