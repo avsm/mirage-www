@@ -4,4 +4,5 @@
 set -ex
 
 cd $TRAVIS_BUILD_DIR
-opam config exec -- make
+eval `opam config env`
+@jbuilder build --verbose @site
