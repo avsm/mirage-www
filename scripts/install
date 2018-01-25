@@ -2,5 +2,12 @@
 # Designed for the Travis CI build environment. See .travis.yml
 
 set -ex
+export OPAMYES=1
+export OPAMJOBS=2
 
-docker pull ocaml/opam:ubuntu-16.04_ocaml-4.06.0
+git -C /home/opam/opam-repository pull origin master
+opam update
+opam switch create 4.06.0
+opam pin add jbuilder --dev
+opam pin add -n rwo $TRAVIS_BUILD_DIR
+opam install --deps-only rwo
