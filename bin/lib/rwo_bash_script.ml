@@ -47,7 +47,7 @@ module Evaluated = struct
 end
 
 let eval t =
-  Or_error.of_exn (Failure "temporarily diabled")
+  return (Or_error.of_exn (Failure "temporarily diabled"))
   (*
   let working_dir = Filename.dirname t.filename in
   let basename = Filename.basename t.filename in
