@@ -57,8 +57,8 @@ let eval t =
       fun () ->
         Deferred.List.map t.commands ~f:(fun command ->
             let temp_file = Filename.temp_file ~in_dir:"." basename ".out" in
-            let _cmd = sprintf "%s >%s 2>&1" command temp_file in
-            Sys.command (sprintf "echo disabled > %s" temp_file) >>= fun exit_code ->
+            let cmd = sprintf "%s >%s 2>&1" command temp_file in
+            Sys.command cmd >>= fun exit_code ->
             Reader.file_contents temp_file >>= fun output ->
             Unix.unlink temp_file >>= fun () ->
             return {Evaluated.command; output; exit_code}
