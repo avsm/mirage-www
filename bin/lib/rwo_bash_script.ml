@@ -47,8 +47,6 @@ module Evaluated = struct
 end
 
 let eval t =
-  return (Or_error.of_exn (Failure "temporarily diabled"))
-  (*
   let working_dir = Filename.dirname t.filename in
   let basename = Filename.basename t.filename in
   Sys.getcwd() >>= fun curr_dir ->
@@ -59,8 +57,8 @@ let eval t =
       fun () ->
         Deferred.List.map t.commands ~f:(fun command ->
             let temp_file = Filename.temp_file ~in_dir:"." basename ".out" in
-            let cmd = sprintf "%s >%s 2>&1" command temp_file in
-            Sys.command cmd >>= fun exit_code ->
+            let _cmd = sprintf "%s >%s 2>&1" command temp_file in
+            Sys.command (sprintf "echo disabled > %s" temp_file) >>= fun exit_code ->
             Reader.file_contents temp_file >>= fun output ->
             Unix.unlink temp_file >>= fun () ->
             return {Evaluated.command; output; exit_code}
@@ -71,7 +69,6 @@ let eval t =
       final() >>| fun () ->
       Ok {Evaluated.filename=t.filename; commands}
     )
-*)
 
 let eval_file filename =
   of_file filename >>= eval
